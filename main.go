@@ -60,7 +60,11 @@ func run(ctx context.Context) error {
 	}
 
 	if err := tidy(ctx, jsonrpc2Conn); err != nil {
-		return fmt.Errorf("failed to do thing: %w", err)
+		return fmt.Errorf("failed to run tidy: %w", err)
+	}
+
+	if err := runTests(ctx, jsonrpc2Conn); err != nil {
+		return fmt.Errorf("failed to run run_tests: %w", err)
 	}
 
 	fmt.Println("+++++++++++++ Sleeping for an hour")
@@ -118,17 +122,59 @@ func initConn(ctx context.Context, conn *jsonrpc2.Conn) error {
 
 func tidy(ctx context.Context, conn *jsonrpc2.Conn) error {
 	var res interface{}
-	type ThingParams struct {
+	type ExecuteCommandParams struct {
+		Command   string            `json:"command"`
+		Arguments []json.RawMessage `json:"arguments"`
+	}
+	type TidyParams struct {
 		URIs []string `json:"URIs"`
 	}
-	if err := conn.Call(ctx, "gopls.tidy", &ThingParams{URIs: []string{path + "main.go"}}, &res); err != nil {
-		return err
-	}
-	b, err := json.Marshal(res)
+	b, err := json.Marshal(&TidyParams{URIs: []string{path + "main.go"}})
 	if err != nil {
 		return err
 	}
-	fmt.Println("+++++++++++++ Tidy result:", string(b))
+	if err := conn.Call(ctx, "workspace/executeCommand", &ExecuteCommandParams{
+		Command:   "gopls.tidy",
+		Arguments: []json.RawMessage{json.RawMessage(b)},
+	}, &res); err != nil {
+		return fmt.Errorf("error with gopls.tidy call: %w", err)
+	}
+	b, err = json.Marshal(res)
+	if err != nil {
+		return fmt.Errorf("error unmarshaling gopls.tidy call: %w", err)
+	}
+	fmt.Println("+++++++++++++ tidy result:", string(b))
+	return nil
+}
+
+func runTests(ctx context.Context, conn *jsonrpc2.Conn) error {
+	var res interface{}
+	type ExecuteCommandParams struct {
+		Command   string            `json:"command"`
+		Arguments []json.RawMessage `json:"arguments"`
+	}
+	type RunTestsParams struct {
+		URI   string   `json:"URI"`
+		Tests []string `json:"Tests"`
+	}
+	b, err := json.Marshal(&RunTestsParams{
+		URI:   pathToURI(path + "/main_test.go"),
+		Tests: []string{"TestXxx"},
+	})
+	if err != nil {
+		return err
+	}
+	if err := conn.Call(ctx, "workspace/executeCommand", &ExecuteCommandParams{
+		Command:   "gopls.run_tests",
+		Arguments: []json.RawMessage{json.RawMessage(b)},
+	}, &res); err != nil {
+		return fmt.Errorf("error with gopls.run_tests call: %w", err)
+	}
+	b, err = json.Marshal(res)
+	if err != nil {
+		return fmt.Errorf("error unmarshaling gopls.run_tests call: %w", err)
+	}
+	fmt.Println("+++++++++++++ run_tests result:", string(b))
 	return nil
 }
 
@@ -154,5 +200,20 @@ func pathToURI(path string) string {
 type client struct{}
 
 func (c *client) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
-	fmt.Printf("Handle! method: %s. remainder: %+v\n", req.Method, req)
+	switch req.Method {
+	case "window/showMessage":
+		fallthrough
+	case "window/logMessage":
+		type ShowMessageParams struct {
+			Type    int    `json:"type"`
+			Message string `json:"message"`
+		}
+		p := ShowMessageParams{}
+		if err := json.Unmarshal(*req.Params, &p); err != nil {
+			fmt.Println("----------------------", err)
+		}
+		fmt.Printf("Handle! method: %s. params: %+v\n", req.Method, p)
+	default:
+		fmt.Printf("Handle! method: %s. remainder: %+v\n", req.Method, req)
+	}
 }
